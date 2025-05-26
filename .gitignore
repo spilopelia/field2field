@@ -1,0 +1,5 @@
+*.log
+/logs
+lightning_logs
+__pycache__/
+new_checkpoints
