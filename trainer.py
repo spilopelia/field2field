@@ -1,6 +1,6 @@
 import torch
 import lightning.pytorch as pl
-from datapile import FastPMPile, HuggingfaceLoader
+from datapile import FastPMPile, HuggingfaceLoader, CSVHDF5DataModule
 from model import Lpt2NbodyNetLightning
 import yaml
 import argparse
@@ -24,7 +24,9 @@ def parse_args():
     parser.add_argument('--gpus', type=int, help='Specify the GPU number to use (default: 0)')
     parser.add_argument('--num_nodes', type=int, help='Specify the GPU number to use (default: 0)')
     parser.add_argument('--num_workers', type=int, help='Specify the number of workers (default: 1)')
-    
+    parser.add_argument('--train_style_only', action='store_true', help='Only train style_weight and style_bias')
+    parser.add_argument('--load_unstyle_model', action='store_true', help='load pretrained unstyle model')
+
     return parser.parse_args()
 
 # Main function to run the training
@@ -35,7 +37,7 @@ def main():
     config = load_config(args.config)
     config['model']['batch_size'] = config['data']['batch_size']
     config['model']['max_epochs'] = config['trainer']['max_epochs']
-    config['model']['used_density'] = config['data']['density']
+    config['model']['density'] = config['data']['density']
     if args.num_workers is not None:
         config['data']['num_workers'] = args.num_workers  # Update the workers count in the config
 
@@ -47,7 +49,14 @@ def main():
 
     config_file_name = os.path.basename(args.config)  # Get the file name
     config_file_name = os.path.splitext(config_file_name)[0]  # Remove the extension
+    if args.train_style_only:
+        config['model']['update_style_only'] = True
     model = Lpt2NbodyNetLightning(**config['model'])
+
+    if args.train_style_only:
+        print("Freezing all parameters except style_weight and style_bias...")
+        for name, param in model.named_parameters():
+            param.requires_grad = name.endswith("style_weight") or name.endswith("style_bias")
 
     # Extract data parameters from the config
     # data_module = FastPMPile(**config['data'])
@@ -56,6 +65,8 @@ def main():
         data_module = FastPMPile(**config['data'])
     elif dataset_type == 'huggingface':
         data_module = HuggingfaceLoader(**config['data']) # faster data pile
+    elif dataset_type == 'hdf5':
+        data_module = CSVHDF5DataModule(**config['data'])
 
     # Extract trainer parameters from the config
     gpus = config['trainer']['gpus'] if torch.cuda.is_available() else None
@@ -72,6 +83,7 @@ def main():
         id=config['wandb'].get('id', None),
         resume=config['wandb'].get('resume', None),
         name=config['wandb'].get('name', None),
+        group=config['wandb'].get('group', None),
     )
     # Get the current WandB run ID
     # Create a checkpoint directory using the WandB run ID
@@ -107,9 +119,20 @@ def main():
         callbacks=[checkpoint_callback, sliceplot_callback, lr_monitor],
         log_every_n_steps=10,
         gradient_clip_val=gradient_clip_val,
+        profiler='simple',  
     )
-
-    trainer.fit(model, datamodule=data_module, ckpt_path=ckpt_path)
+    if args.load_unstyle_model:
+        checkpoint = torch.load(ckpt_path, map_location='cpu')
+        # Filter out incompatible keys
+        state_dict = checkpoint["state_dict"]
+        filtered_state_dict = {
+            k: v for k, v in state_dict.items()
+            if k in model.state_dict() and model.state_dict()[k].shape == v.shape
+        }
+        model.load_state_dict(filtered_state_dict, strict=False)
+        trainer.fit(model, datamodule=data_module)
+    else:
+        trainer.fit(model, datamodule=data_module, ckpt_path=ckpt_path)
 
     # Optionally test the model
     # trainer.test(datamodule=data_module)

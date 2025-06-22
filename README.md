@@ -1,6 +1,6 @@
-Pytorch lightning implementation of d3m
+Pytorch lightning implementation of map2map
 
-Data temporaily stored at '/home/user/ckwan1/ml/data_collection/mlsimdata_npy2'
+Data temporaily stored at '/home/user/ckwan1/ml_project/sobol_hfdataset'
 
 Require package: pytorch lightning, nbodykit
 

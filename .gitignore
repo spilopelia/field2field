@@ -3,3 +3,4 @@
 lightning_logs
 __pycache__/
 new_checkpoints
+wandb_logs

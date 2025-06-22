@@ -2,7 +2,7 @@
 
 #SBATCH -p a
 #SBATCH --exclude=a2
-#SBATCH --nodes=2
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=2
 #SBATCH --gres=gpu:2
 #SBATCH --gpus-per-node=2
@@ -21,4 +21,4 @@ export NCCL_DEBUG=ERROR
 
 conda activate d3m
 cd $SLURM_SUBMIT_DIR
-srun python3 /home/user/ckwan1/ml_project/field2field/trainer.py $@ --gpus 2 --num_nodes 2 --num_workers ${SLURM_CPUS_PER_GPU}
+srun python3 /home/user/ckwan1/ml_project/field2field/trainer.py $@ --gpus 2 --num_nodes 1 --num_workers ${SLURM_CPUS_PER_GPU} --train_style_only --load_unstyle_model

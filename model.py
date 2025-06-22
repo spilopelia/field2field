@@ -7,7 +7,7 @@ from unet import UNet3D, UNet3DwithRes, UNet3Dwithnopadding, StyledUNet3D, FiLMU
 
 from torch_ema import ExponentialMovingAverage
 
-from naf_net import NAFNet3D, BaselineBlock, BaselineBlock_SCA, BaselineBlock_SG, NAFBlock3D
+from naf_net import NAFNet3D, NAFNet3D_modulated, BaselineBlock, BaselineBlock_SCA, BaselineBlock_SG, NAFBlock3D, BaselineBlock_SCA_Modulated, BaselineBlock_SCA_FullyModulated
 from torchmetrics.image import PeakSignalNoiseRatio
 import os
 torch.backends.cudnn.benchmark = True
@@ -23,10 +23,12 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 lr_scheduler: str = 'Constant',
                 lr_warmup: int = 1000,
                 lr_cosine_period = None,
-                num_samples: int = 30000,
+                num_samples: int = 10000,
+                density: bool = False,
                 batch_size: int = 128,
                 max_epochs: int = 500,
                 model: str = 'default',
+                update_style_only : bool = False,
                 num_layers: int = 4, 
                 base_filters: int = 64, 
                 blocks_per_layer: int = 2, 
@@ -48,13 +50,13 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
                 naf_dec_blk_nums = [2, 2, 2, 2],
                 naf_dw_expand = 2,
                 naf_ffn_expand = 2,
+                naf_modulate_outer_convs = False,
                 **kwargs
                 ):
         super(Lpt2NbodyNetLightning, self).__init__()
 
         self.save_hyperparameters(ignore=['kwargs'])  # This will save all init args except kwargs
         self.model_type = model
-
         if model == "UNet":
             self.model = UNet3D(num_layers=self.hparams.num_layers,
                                 base_filters=self.hparams.base_filters,blocks_per_layer=self.hparams.blocks_per_layer,init_dim=self.hparams.init_dim)
@@ -79,6 +81,12 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
         elif model == "NAFNet3D_base_SCA":
                 self.model = NAFNet3D(img_channel=self.hparams.init_dim, width=self.hparams.base_filters, middle_blk_num=self.hparams.naf_middle_blk_num, 
                                 enc_blk_nums=self.hparams.naf_enc_blk_nums, dec_blk_nums=self.hparams.naf_dec_blk_nums, dw_expand=self.hparams.naf_dw_expand, ffn_expand=self.hparams.naf_ffn_expand, block_type = BaselineBlock_SCA)
+        elif model == "NAFNet3D_base_SCA_modulated":
+                self.model = NAFNet3D_modulated(img_channel=self.hparams.init_dim, width=self.hparams.base_filters, middle_blk_num=self.hparams.naf_middle_blk_num, 
+                                enc_blk_nums=self.hparams.naf_enc_blk_nums, dec_blk_nums=self.hparams.naf_dec_blk_nums, dw_expand=self.hparams.naf_dw_expand, ffn_expand=self.hparams.naf_ffn_expand, block_type = BaselineBlock_SCA_Modulated, style_dim=self.hparams.style_size, modulate_outer_convs=self.hparams.naf_modulate_outer_convs)
+        elif model == "NAFNet3D_base_SCA_fullymodulated":
+                self.model = NAFNet3D_modulated(img_channel=self.hparams.init_dim, width=self.hparams.base_filters, middle_blk_num=self.hparams.naf_middle_blk_num, 
+                                enc_blk_nums=self.hparams.naf_enc_blk_nums, dec_blk_nums=self.hparams.naf_dec_blk_nums, dw_expand=self.hparams.naf_dw_expand, ffn_expand=self.hparams.naf_ffn_expand, block_type = BaselineBlock_SCA_FullyModulated, style_dim=self.hparams.style_size, modulate_outer_convs=self.hparams.naf_modulate_outer_convs)
         elif model == "NAFNet3D":
                 self.model = NAFNet3D(img_channel=self.hparams.init_dim, width=self.hparams.base_filters, middle_blk_num=self.hparams.naf_middle_blk_num, 
                                 enc_blk_nums=self.hparams.naf_enc_blk_nums, dec_blk_nums=self.hparams.naf_dec_blk_nums, dw_expand=self.hparams.naf_dw_expand, ffn_expand=self.hparams.naf_ffn_expand, block_type = NAFBlock3D)
@@ -97,7 +105,7 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         # Reverse batch if needed
         if self.hparams.style_size is not None:
-            x, y, s = batch if not self.hparams.reversed else (batch[1], batch[0], batch)
+            x, y, s = batch if not self.hparams.reversed else (batch[1], batch[0], batch[2])
         else:
             x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
 
@@ -145,7 +153,7 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         if self.hparams.style_size is not None:
-            x, y, s = batch if not self.hparams.reversed else (batch[1], batch[0], batch)
+            x, y, s = batch if not self.hparams.reversed else (batch[1], batch[0], batch[2])
         else:
             x, y = batch if not self.hparams.reversed else (batch[1], batch[0])
 
@@ -176,6 +184,10 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             eul_loss = self.criterion(eul_y_hat, eul_y)
             val_loss += torch.log(eul_loss) * self.hparams.eul_loss_scale
 
+        if batch_idx == 0 and not self.hparams.density:
+            eul_y_hat, eul_y = lag2eul([y_hat, y])
+            eul_loss = self.criterion(eul_y_hat, eul_y)    
+            self.log('val_batch_eul_loss', eul_loss, on_step=True, on_epoch=False, logger=True, sync_dist=True) 
 
         # Logging
         val_psnr = self.psnr(y_hat, y)
@@ -196,9 +208,16 @@ class Lpt2NbodyNetLightning(pl.LightningModule):
             self.ema.update()
 
     def configure_optimizers(self):
-        if self.hparams.optimizer == 'AdamW':
+        print(f'update_style_only: {self.hparams.update_style_only}', flush=True)
+        if self.hparams.update_style_only:
+            style_params = [
+                    param for name, param in self.named_parameters()
+                    if name.endswith("style_weight") or name.endswith("style_bias")
+                ]
+            optimizer = optim.AdamW(style_params, betas=(self.hparams.beta1, self.hparams.beta2), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)            
+        elif self.hparams.optimizer == 'AdamW':
             optimizer = optim.AdamW(self.parameters(), betas=(self.hparams.beta1, self.hparams.beta2), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
-        if self.hparams.optimizer == 'Adamax':
+        elif self.hparams.optimizer == 'Adamax':
             optimizer = optim.Adamax(self.parameters(), betas=(self.hparams.beta1, self.hparams.beta2), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
         else:
             optimizer = optim.Adam(self.parameters(), betas=(self.hparams.beta1, self.hparams.beta2), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)

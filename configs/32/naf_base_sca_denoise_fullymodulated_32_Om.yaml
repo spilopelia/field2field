@@ -1,0 +1,49 @@
+model:
+  learning_rate: 1.0e-3
+  weight_decay: 0
+  optimizer: 'AdamW' # ['Adam', 'AdamW']
+  beta1: 0.9
+  beta2: 0.9
+  lr_scheduler: 'Constant' # ['Constant', 'Cosine']
+  #lr_warmup: 1000 # needed if use cosine lr_scheduler
+  #lr_cosine_period: 400000 # match dataset_size/batch_size*max_epochs
+  model: 'NAFNet3D_base_SCA_fullymodulated' # ['default', 'UNet', 'VAE']
+  style_size: 2
+  base_filters: 64 # base filter after first convolutional layer
+  init_dim: 3 # 3 for without density field in tensor
+  reversed: False # if True, predict ZA from FastPM
+  normalized: False
+  eul_loss: False # if True, use Eulerian loss
+  eul_loss_scale: 1.0 # scale factor for Eulerian loss
+  lag_loss_scale: 1.0 # scale factor for Lagrangian loss
+  naf_middle_blk_num : 4
+  naf_enc_blk_nums : [2, 2, 4, 8]
+  naf_dec_blk_nums : [2, 2, 2, 2]
+  naf_dw_expand : 2
+  naf_ffn_expand : 2
+
+data:
+  dataset_type: 'hdf5' # ['raw', 'huggingface', hdf5]
+  train_csv: '/home/user/ckwan1/ml_project/sobol_32_hdf5/train.csv'
+  val_csv: '/home/user/ckwan1/ml_project/sobol_32_hdf5/val.csv'
+  batch_size: 32
+  num_workers: 16
+  augment: True # if True, use data augmentation
+  density: False # if True, use density field in tensor
+  velocity: False # if True, use velocity field in tensor
+  style: ['Om', 'z'] # style names for the dataset
+
+trainer:
+  max_epochs: 1000
+  gpus: 4
+  num_nodes: 1
+  #ckpt_path: '/home/user/ckwan1/ml_project/field2field/new_checkpoints/naf_base_sca_denoise_fullymodulated_32/last.ckpt' # path to the last checkpoint, if you want to resume training
+
+wandb:
+  project: "field2field"
+  entity: "brianwan221-the-chinese-university-of-hong-kong"
+  name: "naf_base_sca_denoise_fullymodulated_32_Om"
+  #id: "5wry5lmi"
+  #resume: 'must' # 'must' to resume from the last checkpoint
+  group: "32"
+

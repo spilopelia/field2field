@@ -5,8 +5,7 @@ model:
   lr_scheduler: 'Constant' # ['Constant', 'Cosine']
   #lr_warmup: 1000 # needed if use cosine lr_scheduler
   #lr_cosine_period: 24000 # match dataset_size/batch_size*max_epochs
-  model: 'FiLMUNet3D' # ['default', 'UNet', 'VAE']
-  style_size: 5
+  model: 'UNet3DwithRes' # ['default', 'UNet', 'VAE']
   num_layers: 4 # layer number of UNet
   base_filters: 64 # base filter after first convolutional layer
   blocks_per_layer: 2 # number of convolutional blocks in each layer
@@ -26,13 +25,6 @@ data:
   num_workers: 16
   augment: True # if True, use data augmentation
   density: False # if True, use density field in tensor
-  velocity: False # if True, use velocity field in tensor
-  style:
-    - 'Om'
-    - 'h'
-    - 'ns'
-    - 's8'
-  redshift: 0.0
 
 trainer:
   max_epochs: 50
@@ -42,4 +34,4 @@ trainer:
 wandb:
   project: "field2field"
   entity: "brianwan221-the-chinese-university-of-hong-kong"
-  name: "FiLMUNet3D"
+  name: "default_UNet3DwithRes"

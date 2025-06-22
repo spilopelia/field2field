@@ -289,3 +289,162 @@ class FiLMLayer3D(nn.Module):
         beta = beta.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
 
         return gamma * x + beta
+    
+class ModulatedConv3d(nn.Module):
+    """Modulated 3D Convolution layer, inspired by StyleGAN2.
+    """
+    def __init__(self, style_size, in_chan, out_chan, kernel_size=3, padding=0, stride=1,
+                 bias=True, resample=None, eps=1e-8):
+        super().__init__()
+
+        self.in_chan = in_chan
+        self.out_chan = out_chan
+        self.kernel_size = kernel_size
+        self.padding = padding
+        self.stride = stride
+        self.eps = eps
+        self.resample = resample # 'U' for upsample (ConvTranspose3d), 'D' for downsample (Conv3d with stride > 1)
+
+        # Style modulation parameters
+        self.style_weight = nn.Parameter(torch.empty(in_chan, style_size))
+        nn.init.kaiming_uniform_(self.style_weight, a=math.sqrt(5),
+                                 mode='fan_in', nonlinearity='leaky_relu')
+        self.style_bias = nn.Parameter(torch.ones(in_chan)) # Init to 1 for initial identity-like modulation
+
+        # Convolution weights
+        if self.resample == 'U': # ConvTranspose3d
+            # NOTE: PyTorch ConvTranspose3d weights are (in_chan, out_chan/groups, *kernel_size)
+            self.weight = nn.Parameter(torch.empty(in_chan, out_chan, kernel_size, kernel_size, kernel_size))
+            self.conv_fn = F.conv_transpose3d
+        else: # Conv3d (covers no resampling or 'D' for downsampling)
+            self.weight = nn.Parameter(torch.empty(out_chan, in_chan, kernel_size, kernel_size, kernel_size))
+            self.conv_fn = F.conv3d
+        
+        nn.init.kaiming_uniform_(
+            self.weight, a=math.sqrt(5),
+            mode='fan_in', # For ConvTranspose3d, fan_in is out_chan; for Conv3d, fan_in is in_chan * K^3
+            nonlinearity='leaky_relu'
+        )
+
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(1, out_chan, 1, 1, 1))
+            # Optional: Initialize bias similar to nn.Conv3d if desired
+            # fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
+            # if fan_in > 0:
+            #     bound = 1 / math.sqrt(fan_in)
+            #     nn.init.uniform_(self.bias, -bound, bound)
+        else:
+            self.register_parameter('bias', None)
+
+    def forward(self, x, s):
+        N, Cin, *DHWin = x.shape
+
+        # (N, style_size) -> (N, in_chan) for modulation
+        style_modulation = F.linear(s, self.style_weight, bias=self.style_bias)
+
+        if self.resample == 'U': # ConvTranspose3d
+            # Modulate each input channel's filters
+            w = self.weight.unsqueeze(0) * style_modulation.view(N, self.in_chan, 1, 1, 1, 1)
+            # Demodulate: normalize over [out_chan_per_group, K, K, K] dimensions
+            # w shape: (N, I, O, *K)
+            demod_dims = (2, 3, 4, 5) # Demodulate over O, K, K, K
+        else: # Conv3d
+            # Modulate each input channel's contribution to output filters
+            w = self.weight.unsqueeze(0) * style_modulation.view(N, 1, self.in_chan, 1, 1, 1)
+            # Demodulate: normalize over [in_chan_per_group, K, K, K] dimensions
+            # w shape: (N, O, I, *K)
+            demod_dims = (2, 3, 4, 5) # Demodulate over I, K, K, K
+
+        w = w * torch.rsqrt(w.pow(2).sum(dim=demod_dims, keepdim=True) + self.eps)
+
+        x = x.view(1, N * Cin, *DHWin) 
+        
+        if self.resample == 'U': # ConvTranspose3d
+            kernels = w.view(N * self.in_chan, self.out_chan, *self.weight.shape[2:])
+        else: # Conv3d
+            kernels = w.view(N * self.out_chan, self.in_chan, *self.weight.shape[2:])
+
+        # Perform convolution
+        if self.resample == 'U':
+            # For conv_transpose3d, padding means something different.
+            # Output padding might be needed if stride > 1 to get precise output shape.
+            # For stride=1, kernel_size=K, padding=(K-1)/2 preserves size.
+            out = self.conv_fn(x, kernels, bias=None, stride=self.stride, padding=self.padding, groups=N)
+        else: # Conv3d
+            out = self.conv_fn(x, kernels, bias=None, stride=self.stride, padding=self.padding, groups=N)
+
+        # Reshape output
+        # Output from conv is (1, N*Cout, D', H', W')
+        _, _, *DHWout = out.shape
+        out = out.view(N, self.out_chan, *DHWout)
+
+        if self.bias is not None:
+            out = out + self.bias # (N, Cout, D', H', W') + (1, Cout, 1, 1, 1)
+
+        return out
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(in_chan={self.in_chan}, out_chan={self.out_chan}, "
+            f"kernel_size={self.kernel_size}, stride={self.stride}, padding={self.padding}, "
+            f"resample={self.resample}, style_size={self.style_weight.shape[1]})"
+        )
+    
+class DepthwiseModulatedConv3d(nn.Module):
+    """Modulated Depthwise 3D Convolution layer."""
+    def __init__(self, style_size, in_chan, out_chan, kernel_size=3, padding=0, stride=1, bias=True, eps=1e-8):
+        super().__init__()
+        if out_chan != in_chan:
+            print(f"Warning: For depthwise=True, out_chan ({out_chan}) is ignored and set to in_chan ({self.in_chan}).")
+        channels = in_chan
+        self.channels = channels
+        self.kernel_size = kernel_size
+        self.padding = padding
+        self.stride = stride
+        self.eps = eps
+
+        # Style modulation parameters
+        self.style_weight = nn.Parameter(torch.empty(channels, style_size))
+        nn.init.kaiming_uniform_(self.style_weight, a=math.sqrt(5), mode='fan_in', nonlinearity='leaky_relu')
+        self.style_bias = nn.Parameter(torch.ones(channels))
+
+        # Convolution weights (depthwise)
+        self.weight = nn.Parameter(torch.empty(channels, 1, kernel_size, kernel_size, kernel_size))
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5), mode='fan_in', nonlinearity='leaky_relu')
+
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(1, channels, 1, 1, 1))
+        else:
+            self.register_parameter('bias', None)
+
+    def forward(self, x, s):
+        N, C, D, H, W = x.shape
+
+        # Style modulation: (N, style_size) -> (N, C)
+        style_modulation = F.linear(s, self.style_weight, bias=self.style_bias)
+
+        # Modulate weights: (N, C, 1, K, K, K)
+        w = self.weight.unsqueeze(0) * style_modulation.view(N, C, 1, 1, 1, 1)
+
+        # Demodulation
+        demod = torch.rsqrt(w.pow(2).sum(dim=[2, 3, 4, 5], keepdim=True) + self.eps)
+        w = w * demod
+
+        # Reshape input and weights for group convolution
+        x = x.view(1, N * C, D, H, W)
+        w = w.view(N * C, 1, self.kernel_size, self.kernel_size, self.kernel_size)
+
+        out = F.conv3d(x, w, bias=None, stride=self.stride, padding=self.padding, groups=N * C)
+
+        # Reshape output
+        _, _, D_out, H_out, W_out = out.shape
+        out = out.view(N, C, D_out, H_out, W_out)
+
+        if self.bias is not None:
+            out = out + self.bias
+
+        return out
+
+    def __repr__(self):
+        return (f"{self.__class__.__name__}(channels={self.channels}, kernel_size={self.kernel_size}, "
+                f"stride={self.stride}, padding={self.padding}, style_size={self.style_weight.shape[1]})")
