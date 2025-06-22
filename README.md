@@ -1,6 +1,8 @@
-Pytorch lightning implementation of map2map
+Pytorch lightning implementation of field2field, feature NAFNet model with style modulation
 
-Data temporaily stored at '/home/user/ckwan1/ml_project/sobol_hfdataset'
+NAFNet model: https://github.com/megvii-research/NAFNet
+
+Data temporaily stored at '/home/user/ckwan1/ml_project/sobol_32_hdf5'
 
 Require package: pytorch lightning, nbodykit
 
